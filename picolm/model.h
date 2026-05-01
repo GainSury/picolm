@@ -122,6 +122,8 @@ typedef struct {
     uint64_t    tok_n_scores;
     uint32_t    tok_bos_id;
     uint32_t    tok_eos_id;
+    /* Tokenizer type: 0 = SentencePiece/llama (▁), 1 = GPT2/tiktoken (Ġ) */
+    int         tok_model_type;
 } model_t;
 
 /* Load a GGUF model file. Returns 0 on success. */

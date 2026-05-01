@@ -55,7 +55,7 @@ install: $(TARGET)
 	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/
 	@echo "Installed $(TARGET) to $(DESTDIR)$(PREFIX)/bin/"
 
-# --- Download default model ---
+# --- Download default model (TinyLlama 1.1B) ---
 model:
 	@mkdir -p $(MODEL_DIR)
 	@if [ ! -f "$(MODEL_DIR)/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" ]; then \
@@ -67,7 +67,19 @@ model:
 		echo "Model already exists at $(MODEL_DIR)/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"; \
 	fi
 
+# --- Download Qwen3 0.6B model (smallest Qwen3, ~400 MB Q4_K_M) ---
+model-qwen:
+	@mkdir -p $(MODEL_DIR)
+	@if [ ! -f "$(MODEL_DIR)/Qwen3-0.6B-Q4_K_M.gguf" ]; then \
+		echo "Downloading Qwen3 0.6B Q4_K_M (~400 MB)..."; \
+		curl -L -o "$(MODEL_DIR)/Qwen3-0.6B-Q4_K_M.gguf" \
+			"https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf"; \
+		echo "Done."; \
+	else \
+		echo "Model already exists at $(MODEL_DIR)/Qwen3-0.6B-Q4_K_M.gguf"; \
+	fi
+
 clean:
 	rm -f $(TARGET) $(TARGET).exe *.obj *.o
 
-.PHONY: native static pi pi-arm32 cross-pi riscv cross-riscv debug install model clean
+.PHONY: native static pi pi-arm32 cross-pi riscv cross-riscv debug install model model-qwen clean

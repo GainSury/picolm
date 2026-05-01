@@ -145,7 +145,7 @@ picoclaw agent -m "Search for weather in Tokyo"
 
 ## What is PicoLM?
 
-PicoLM is a **minimal, from-scratch LLM inference engine** written in ~2,500 lines of C11. It runs [TinyLlama 1.1B](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0) (and other LLaMA-architecture models in GGUF format) on hardware that most inference frameworks won't even consider:
+PicoLM is a **minimal, from-scratch LLM inference engine** written in ~2,500 lines of C11. It runs [TinyLlama 1.1B](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0), [Qwen3](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) (and other LLaMA/Qwen-architecture models in GGUF format) on hardware that most inference frameworks won't even consider:
 
 - **Raspberry Pi Zero 2W** ($15, 512MB RAM, ARM Cortex-A53)
 - **Sipeed LicheeRV** ($12, 512MB RAM, RISC-V)
@@ -179,6 +179,7 @@ The model file (638MB) stays on disk. PicoLM **memory-maps** it and streams one 
 |---------|-------------|
 | **GGUF Native** | Reads GGUF v2/v3 files directly — no conversion needed |
 | **K-Quant Support** | Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_0, Q4_0, F16, F32 |
+| **Multi-architecture** | LLaMA family (TinyLlama, Mistral, …) **and Qwen2/Qwen3 family** |
 | **mmap Layer Streaming** | Model weights stay on disk; OS pages in one layer at a time |
 | **FP16 KV Cache** | Halves KV cache memory (44MB vs 88MB for 2048 context) |
 | **Flash Attention** | Online softmax — no O(seq_len) attention buffer needed |
@@ -188,7 +189,7 @@ The model file (638MB) stays on disk. PicoLM **memory-maps** it and streams one 
 | **Multi-threaded matmul** | Parallel matrix-vector multiply across CPU cores |
 | **Grammar-Constrained JSON** | `--json` flag forces valid JSON output (for tool calling) |
 | **KV Cache Persistence** | `--cache` saves/loads prompt state — skip prefill on re-runs |
-| **BPE Tokenizer** | Score-based byte-pair encoding, loaded from GGUF metadata |
+| **Dual BPE Tokenizer** | SentencePiece (LLaMA) and GPT2/tiktoken (Qwen) — auto-detected |
 | **Top-p Sampling** | Temperature + nucleus sampling with configurable seed |
 | **Pipe-friendly** | Reads prompts from stdin: `echo "Hello" \| ./picolm model.gguf` |
 | **Zero Dependencies** | Only libc, libm, libpthread. No external libraries. |
@@ -222,12 +223,17 @@ cd picolm/picolm
 # Auto-detect CPU (enables SSE2/AVX on x86, NEON on ARM)
 make native
 
-# Download a model
-make model
+# Download a model — choose one:
+make model        # TinyLlama 1.1B Q4_K_M (638 MB, LLaMA architecture)
+make model-qwen   # Qwen3 0.6B Q4_K_M (~400 MB, Qwen3 architecture)
 
-# Run it
+# Run TinyLlama
 ./picolm /opt/picolm/models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
     -p "The meaning of life is" -n 100
+
+# Run Qwen3 (auto-detected, no extra flags needed)
+./picolm /opt/picolm/models/Qwen3-0.6B-Q4_K_M.gguf \
+    -p "<|im_start|>user\nWhat is photosynthesis?<|im_end|>\n<|im_start|>assistant\n" -n 200
 ```
 
 ### Build on Windows (MSVC)
