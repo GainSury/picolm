@@ -39,6 +39,11 @@ typedef struct {
     const void *ffn_gate;
     const void *ffn_down;
     const void *ffn_up;
+    /* Optional Gemma 4 weights (NULL for other architectures) */
+    const void *post_attn_norm;  /* post-attention normalization */
+    const void *post_ffn_norm;   /* post-FFN normalization */
+    const void *attn_q_norm;     /* per-head Q normalization (head_dim elements) */
+    const void *attn_k_norm;     /* per-head K normalization (head_dim elements) */
     /* Per-tensor quantization types */
     gguf_type_t type_attn_norm;
     gguf_type_t type_attn_q;
@@ -49,6 +54,10 @@ typedef struct {
     gguf_type_t type_ffn_gate;
     gguf_type_t type_ffn_down;
     gguf_type_t type_ffn_up;
+    gguf_type_t type_post_attn_norm;
+    gguf_type_t type_post_ffn_norm;
+    gguf_type_t type_attn_q_norm;
+    gguf_type_t type_attn_k_norm;
 } layer_weights_t;
 
 typedef struct {
@@ -88,6 +97,11 @@ typedef struct {
     float *attn_norm_w[MAX_LAYERS];
     float *ffn_norm_w[MAX_LAYERS];
     float *output_norm_w;
+    /* Optional Gemma 4 norm weights (NULL for other architectures) */
+    float *post_attn_norm_w[MAX_LAYERS];
+    float *post_ffn_norm_w[MAX_LAYERS];
+    float *attn_q_norm_w[MAX_LAYERS];  /* head_dim elements, shared across heads */
+    float *attn_k_norm_w[MAX_LAYERS];  /* head_dim elements, shared across KV heads */
 
     /* Single allocation base */
     void *mem_block;
