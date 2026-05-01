@@ -50,6 +50,7 @@ int tokenizer_load(tokenizer_t *t, const model_t *m) {
     t->vocab_size = vs;
     t->bos_id = m->tok_bos_id;
     t->eos_id = m->tok_eos_id;
+    t->tok_model_type = m->tok_model_type;
 
     /* Allocate vocab and scores arrays */
     t->vocab = (char **)calloc((size_t)vs, sizeof(char *));
@@ -113,27 +114,55 @@ int tokenizer_encode(const tokenizer_t *t, const char *text, int *tokens, int ma
 
     if (!text || !*text) return n_tokens;
 
-    /* SentencePiece convention: replace spaces with ▁ (U+2581, UTF-8: E2 96 81)
-     * and prepend ▁ at the start of the text.
-     * Build a normalized copy: " Once upon a time" → "▁Once▁upon▁a▁time" */
     int text_len = (int)strlen(text);
-    /* Worst case: every byte is a space → 3x expansion, plus leading ▁ */
-    int norm_cap = text_len * 3 + 4;
-    char *norm = (char *)malloc((size_t)norm_cap);
+
+    /* Build a normalised copy of the input text:
+     *
+     * SentencePiece (tok_model_type == 0, LLaMA):
+     *   Replace every space with ▁ (U+2581, 0xE2 0x96 0x81) and prepend ▁.
+     *   "hello world" → "▁hello▁world"
+     *
+     * GPT2/tiktoken (tok_model_type == 1, Qwen):
+     *   Replace every space with Ġ (U+0120, 0xC4 0xA0). No leading prefix.
+     *   "hello world" → "helloĠworld"
+     */
+    int norm_cap;
+    char *norm;
     int norm_len = 0;
 
-    /* Add leading ▁ */
-    norm[norm_len++] = (char)0xE2;
-    norm[norm_len++] = (char)0x96;
-    norm[norm_len++] = (char)0x81;
+    if (t->tok_model_type == 1) {
+        /* GPT2: each space expands from 1 byte to 2 bytes (0xC4 0xA0) */
+        norm_cap = text_len * 2 + 4;
+        norm = (char *)malloc((size_t)norm_cap);
+        if (!norm) return n_tokens;
 
-    for (int i = 0; i < text_len; i++) {
-        if (text[i] == ' ') {
-            norm[norm_len++] = (char)0xE2;
-            norm[norm_len++] = (char)0x96;
-            norm[norm_len++] = (char)0x81;
-        } else {
-            norm[norm_len++] = text[i];
+        for (int i = 0; i < text_len; i++) {
+            if (text[i] == ' ') {
+                norm[norm_len++] = (char)0xC4;
+                norm[norm_len++] = (char)0xA0;
+            } else {
+                norm[norm_len++] = text[i];
+            }
+        }
+    } else {
+        /* SentencePiece: worst case every byte is a space → 3x, plus leading ▁ */
+        norm_cap = text_len * 3 + 4;
+        norm = (char *)malloc((size_t)norm_cap);
+        if (!norm) return n_tokens;
+
+        /* Add leading ▁ */
+        norm[norm_len++] = (char)0xE2;
+        norm[norm_len++] = (char)0x96;
+        norm[norm_len++] = (char)0x81;
+
+        for (int i = 0; i < text_len; i++) {
+            if (text[i] == ' ') {
+                norm[norm_len++] = (char)0xE2;
+                norm[norm_len++] = (char)0x96;
+                norm[norm_len++] = (char)0x81;
+            } else {
+                norm[norm_len++] = text[i];
+            }
         }
     }
     norm[norm_len] = '\0';
@@ -242,6 +271,30 @@ const char *tokenizer_decode(const tokenizer_t *t, int prev_token, int token) {
         return byte_buf;
     }
 
+    if (t->tok_model_type == 1) {
+        /* GPT2/tiktoken (Qwen): Ġ (U+0120 = 0xC4 0xA0) represents a leading space */
+        if ((unsigned char)str[0] == 0xC4 && (unsigned char)str[1] == 0xA0) {
+            /* str[2] is safe: str is always null-terminated, so at minimum it points to '\0' */
+            static char space_buf[256];
+            if (prev_token == (int)t->bos_id) {
+                /* After BOS, strip the leading Ġ */
+                int len = (int)strlen(str + 2);
+                if (len >= (int)sizeof(space_buf)) len = (int)sizeof(space_buf) - 1;
+                memcpy(space_buf, str + 2, (size_t)len);
+                space_buf[len] = '\0';
+                return space_buf;
+            }
+            space_buf[0] = ' ';
+            int len = (int)strlen(str + 2);
+            if (len >= (int)sizeof(space_buf) - 1) len = (int)sizeof(space_buf) - 2;
+            memcpy(space_buf + 1, str + 2, (size_t)len);
+            space_buf[1 + len] = '\0';
+            return space_buf;
+        }
+        return str;
+    }
+
+    /* SentencePiece (LLaMA): ▁ (U+2581 = 0xE2 0x96 0x81) represents a leading space */
     /* Handle SentencePiece leading space marker "▁" -> " " */
     /* The "▁" character is U+2581, encoded as 0xE2 0x96 0x81 in UTF-8 */
     if ((unsigned char)str[0] == 0xE2 && (unsigned char)str[1] == 0x96 && (unsigned char)str[2] == 0x81) {
