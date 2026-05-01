@@ -234,25 +234,32 @@ static int parse_gguf(model_t *m, int max_seq_len) {
         uint32_t vtype = read_u32(&r);
 
         if (str_eq(key, "llama.embedding_length") || str_eq(key, "general.embedding_length") ||
-            str_eq(key, "qwen2.embedding_length") || str_eq(key, "qwen3.embedding_length")) {
+            str_eq(key, "qwen2.embedding_length") || str_eq(key, "qwen3.embedding_length") ||
+            str_eq(key, "gemma4.embedding_length")) {
             int dummy; cfg->n_embd = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.feed_forward_length") || str_eq(key, "general.feed_forward_length") ||
-                   str_eq(key, "qwen2.feed_forward_length") || str_eq(key, "qwen3.feed_forward_length")) {
+                   str_eq(key, "qwen2.feed_forward_length") || str_eq(key, "qwen3.feed_forward_length") ||
+                   str_eq(key, "gemma4.feed_forward_length")) {
             int dummy; cfg->n_ffn = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.attention.head_count") ||
-                   str_eq(key, "qwen2.attention.head_count") || str_eq(key, "qwen3.attention.head_count")) {
+                   str_eq(key, "qwen2.attention.head_count") || str_eq(key, "qwen3.attention.head_count") ||
+                   str_eq(key, "gemma4.attention.head_count")) {
             int dummy; cfg->n_heads = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.attention.head_count_kv") ||
-                   str_eq(key, "qwen2.attention.head_count_kv") || str_eq(key, "qwen3.attention.head_count_kv")) {
+                   str_eq(key, "qwen2.attention.head_count_kv") || str_eq(key, "qwen3.attention.head_count_kv") ||
+                   str_eq(key, "gemma4.attention.head_count_kv")) {
             int dummy; cfg->n_kv_heads = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.block_count") ||
-                   str_eq(key, "qwen2.block_count") || str_eq(key, "qwen3.block_count")) {
+                   str_eq(key, "qwen2.block_count") || str_eq(key, "qwen3.block_count") ||
+                   str_eq(key, "gemma4.block_count")) {
             int dummy; cfg->n_layers = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.context_length") ||
-                   str_eq(key, "qwen2.context_length") || str_eq(key, "qwen3.context_length")) {
+                   str_eq(key, "qwen2.context_length") || str_eq(key, "qwen3.context_length") ||
+                   str_eq(key, "gemma4.context_length")) {
             int dummy; cfg->max_seq_len = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.rope.freq_base") ||
-                   str_eq(key, "qwen2.rope.freq_base") || str_eq(key, "qwen3.rope.freq_base")) {
+                   str_eq(key, "qwen2.rope.freq_base") || str_eq(key, "qwen3.rope.freq_base") ||
+                   str_eq(key, "gemma4.rope.freq_base")) {
             if (vtype == GGUF_META_FLOAT32) {
                 cfg->rope_freq_base = read_f32(&r);
             } else {
@@ -261,7 +268,8 @@ static int parse_gguf(model_t *m, int max_seq_len) {
         } else if (str_eq(key, "general.alignment")) {
             int dummy; cfg->alignment = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.vocab_size") ||
-                   str_eq(key, "qwen2.vocab_size") || str_eq(key, "qwen3.vocab_size")) {
+                   str_eq(key, "qwen2.vocab_size") || str_eq(key, "qwen3.vocab_size") ||
+                   str_eq(key, "gemma4.vocab_size")) {
             int dummy; cfg->vocab_size = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "tokenizer.ggml.model")) {
             if (vtype == GGUF_META_STRING) {
@@ -391,6 +399,14 @@ static int parse_gguf(model_t *m, int max_seq_len) {
                     lw->ffn_down = ptr; lw->type_ffn_down = qtype;
                 } else if (strcmp(suffix, "ffn_up.weight") == 0) {
                     lw->ffn_up = ptr; lw->type_ffn_up = qtype;
+                } else if (strcmp(suffix, "post_attn_norm.weight") == 0) {
+                    lw->post_attn_norm = ptr; lw->type_post_attn_norm = qtype;
+                } else if (strcmp(suffix, "post_ffn_norm.weight") == 0) {
+                    lw->post_ffn_norm = ptr; lw->type_post_ffn_norm = qtype;
+                } else if (strcmp(suffix, "attn_q_norm.weight") == 0) {
+                    lw->attn_q_norm = ptr; lw->type_attn_q_norm = qtype;
+                } else if (strcmp(suffix, "attn_k_norm.weight") == 0) {
+                    lw->attn_k_norm = ptr; lw->type_attn_k_norm = qtype;
                 }
             }
         }
@@ -471,8 +487,14 @@ static int allocate_run_state(model_t *m) {
     /* RoPE tables: cos and sin for each (position, dim_pair) */
     size_t sz_rope = (size_t)c->max_seq_len * half_dim * sizeof(float) * 2;
 
-    /* Norm weights: (n_layers * 2 + 1) * n_embd floats */
-    size_t n_norm = (size_t)(c->n_layers * 2 + 1) * c->n_embd;
+    /* Norm weights: (n_layers * 2 + 1) * n_embd floats for pre-norms + output norm.
+     * For Gemma 4, also include post_attn_norm, post_ffn_norm (n_embd each per layer)
+     * and attn_q_norm, attn_k_norm (head_dim each per layer). */
+    int has_post_norm = (m->weights.layers[0].post_attn_norm != NULL);
+    int has_qk_norm   = (m->weights.layers[0].attn_q_norm   != NULL);
+    size_t n_norm = (size_t)(c->n_layers * 2 + 1) * (size_t)c->n_embd;
+    if (has_post_norm) n_norm += (size_t)c->n_layers * 2 * (size_t)c->n_embd;
+    if (has_qk_norm)   n_norm += (size_t)c->n_layers * 2 * (size_t)c->head_dim;
     size_t sz_norm = n_norm * sizeof(float);
 
     size_t total = sz_x + sz_xb + sz_xb2 + sz_q +
@@ -542,6 +564,47 @@ static int allocate_run_state(model_t *m) {
     s->output_norm_w = nw;
     dequantize_row(m->weights.output_norm, nw, c->n_embd,
                    m->weights.type_output_norm);
+    nw += c->n_embd;
+
+    /* Pre-dequantize Gemma 4 post-norm weights (post_attn_norm, post_ffn_norm) */
+    for (int l = 0; l < c->n_layers; l++) {
+        if (m->weights.layers[l].post_attn_norm) {
+            s->post_attn_norm_w[l] = nw;
+            dequantize_row(m->weights.layers[l].post_attn_norm, nw, c->n_embd,
+                           m->weights.layers[l].type_post_attn_norm);
+            nw += c->n_embd;
+        } else {
+            s->post_attn_norm_w[l] = NULL;
+        }
+        if (m->weights.layers[l].post_ffn_norm) {
+            s->post_ffn_norm_w[l] = nw;
+            dequantize_row(m->weights.layers[l].post_ffn_norm, nw, c->n_embd,
+                           m->weights.layers[l].type_post_ffn_norm);
+            nw += c->n_embd;
+        } else {
+            s->post_ffn_norm_w[l] = NULL;
+        }
+    }
+
+    /* Pre-dequantize Gemma 4 QK-norm weights (attn_q_norm, attn_k_norm) */
+    for (int l = 0; l < c->n_layers; l++) {
+        if (m->weights.layers[l].attn_q_norm) {
+            s->attn_q_norm_w[l] = nw;
+            dequantize_row(m->weights.layers[l].attn_q_norm, nw, c->head_dim,
+                           m->weights.layers[l].type_attn_q_norm);
+            nw += c->head_dim;
+        } else {
+            s->attn_q_norm_w[l] = NULL;
+        }
+        if (m->weights.layers[l].attn_k_norm) {
+            s->attn_k_norm_w[l] = nw;
+            dequantize_row(m->weights.layers[l].attn_k_norm, nw, c->head_dim,
+                           m->weights.layers[l].type_attn_k_norm);
+            nw += c->head_dim;
+        } else {
+            s->attn_k_norm_w[l] = NULL;
+        }
+    }
 
     /* Init tensor scratch */
     tensor_init_scratch(s->dequant_scratch, scratch_dim);
@@ -618,6 +681,18 @@ float *model_forward(model_t *m, int token, int pos) {
 
         /* Apply RoPE to Q and K (using pre-computed tables) */
         rope(s->q, k_tmp, head_dim, n_heads, n_kv_heads, cos_pos, sin_pos);
+
+        /* Per-head QK normalization (Gemma 4): applied after RoPE */
+        if (s->attn_q_norm_w[l]) {
+            for (int h = 0; h < n_heads; h++) {
+                rmsnorm(s->q + h * head_dim, s->q + h * head_dim,
+                        s->attn_q_norm_w[l], head_dim);
+            }
+            for (int h = 0; h < n_kv_heads; h++) {
+                rmsnorm(k_tmp + h * head_dim, k_tmp + h * head_dim,
+                        s->attn_k_norm_w[l], head_dim);
+            }
+        }
 
         /* Convert K to FP16 and store */
         for (int d = 0; d < kv_dim; d++) {
@@ -700,6 +775,10 @@ float *model_forward(model_t *m, int token, int pos) {
 
         /* Output projection */
         matmul(s->xb2, s->xb, lw->attn_output, dim, dim, lw->type_attn_output);
+        /* Post-attention normalization (Gemma 4) */
+        if (s->post_attn_norm_w[l]) {
+            rmsnorm(s->xb2, s->xb2, s->post_attn_norm_w[l], dim);
+        }
         vec_add(s->x, s->xb2, dim);
 
         /* ---- FFN (SwiGLU) ---- */
@@ -712,6 +791,10 @@ float *model_forward(model_t *m, int token, int pos) {
         elemwise_mul(s->hb, s->hb, s->hb2, n_ffn);
 
         matmul(s->xb, s->hb, lw->ffn_down, n_ffn, dim, lw->type_ffn_down);
+        /* Post-FFN normalization (Gemma 4) */
+        if (s->post_ffn_norm_w[l]) {
+            rmsnorm(s->xb, s->xb, s->post_ffn_norm_w[l], dim);
+        }
         vec_add(s->x, s->xb, dim);
     }
 
