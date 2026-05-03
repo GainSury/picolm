@@ -27,8 +27,8 @@ typedef struct {
     gguf_type_t weight_type; /* default weight quantization type */
 
     /* SSM/GDN config for hybrid architectures (Qwen3.5, 0 = pure transformer) */
-    int ssm_d_state;          /* head dimension for K and V (= ssm_d_state) */
-    int ssm_d_inner;          /* SSM inner size (= n_v_heads * ssm_d_state) */
+    int ssm_d_state;          /* per-head state dimension (shared by both K and V heads) */
+    int ssm_d_inner;          /* total value dimension (= ssm_dt_rank * ssm_d_state) */
     int ssm_d_conv;           /* depthwise conv kernel size (typically 4) */
     int ssm_dt_rank;          /* number of V heads (ssm_time_step_rank) */
     int ssm_n_group;          /* number of K heads (ssm_group_count) */

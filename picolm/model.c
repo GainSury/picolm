@@ -819,6 +819,11 @@ int model_load(model_t *m, const char *path, int max_seq_len) {
  *   - Qwen3.5 hybrid GDN (Gated Delta Network) layers
  * ================================================================ */
 
+/* Upper bounds for on-stack GDN arrays — no heap allocation in the hot path.
+ * A runtime check in gdn_forward() enforces these limits. */
+#define MAX_SSM_HEADS   64   /* max n_vh (V-heads); Qwen3.5-0.8B uses 8 */
+#define MAX_SSM_HEAD_DIM 256 /* max hd  (SSM head dim); Qwen3.5-0.8B uses 64 */
+
 /* ---- Small math helpers used by the GDN forward pass ---- */
 
 /* sigmoid(x) = 1 / (1 + exp(-x)) */
@@ -877,10 +882,18 @@ static void gdn_forward(
     int conv_dim = key_dim * 2 + val_dim;
     int dconv1   = (d_conv > 1) ? d_conv - 1 : 1;
 
+    /* Runtime bound-checks for on-stack array sizes */
+    if (n_vh > MAX_SSM_HEADS || hd > MAX_SSM_HEAD_DIM) {
+        fprintf(stderr, "gdn_forward: n_vh=%d or hd=%d exceeds compiled limit "
+                "(%d/%d); rebuild with larger MAX_SSM_HEADS/MAX_SSM_HEAD_DIM\n",
+                n_vh, hd, MAX_SSM_HEADS, MAX_SSM_HEAD_DIM);
+        return;
+    }
+
     /* Step 1: input projections (xb is read-only in this block) */
     matmul(qkv_buf,   xb, lw->wqkv,      dim, conv_dim, lw->type_wqkv);
     matmul(z_buf,     xb, lw->wqkv_gate, dim, val_dim,  lw->type_wqkv_gate);
-    float beta_raw[64], alpha_raw[64]; /* n_vh <= 64 in practice */
+    float beta_raw[MAX_SSM_HEADS], alpha_raw[MAX_SSM_HEADS];
     matmul(beta_raw,  xb, lw->ssm_beta,  dim, n_vh, lw->type_ssm_beta);
     matmul(alpha_raw, xb, lw->ssm_alpha, dim, n_vh, lw->type_ssm_alpha);
 
@@ -912,7 +925,7 @@ static void gdn_forward(
     }
 
     /* Step 4: per-head forget gate and beta */
-    float forget_arr[64], beta_arr[64];
+    float forget_arr[MAX_SSM_HEADS], beta_arr[MAX_SSM_HEADS];
     for (int h = 0; h < n_vh; h++) {
         float alpha_sp = softplusf(alpha_raw[h] + ssm_dt_w[h]);
         forget_arr[h] = expf(alpha_sp * ssm_a_w[h]); /* ssm_a = -exp(A_log) < 0 */
@@ -935,7 +948,7 @@ static void gdn_forward(
         for (int ij = 0; ij < hd * hd; ij++) state_h[ij] *= fh;
 
         /* sk[j] = state_h^T @ k_h */
-        float sk[256]; /* hd typically 64 */
+        float sk[MAX_SSM_HEAD_DIM];
         for (int j = 0; j < hd; j++) {
             float a = 0.0f;
             for (int i = 0; i < hd; i++) a += state_h[(size_t)i * hd + j] * k_h[i];
@@ -943,7 +956,7 @@ static void gdn_forward(
         }
 
         /* delta d = beta * (v - sk) */
-        float d_arr[256];
+        float d_arr[MAX_SSM_HEAD_DIM];
         float bh = beta_arr[h];
         for (int j = 0; j < hd; j++) d_arr[j] = bh * (v_h[j] - sk[j]);
 
