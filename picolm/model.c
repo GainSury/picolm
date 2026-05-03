@@ -17,6 +17,9 @@
 #include <unistd.h>
 #endif
 
+/* Default RMS epsilon used when GGUF does not supply a value */
+#define DEFAULT_NORM_RMS_EPS 1e-6f
+
 /* ---- GGUF metadata value types ---- */
 enum {
     GGUF_META_UINT8   = 0,
@@ -352,7 +355,7 @@ static int parse_gguf(model_t *m, int max_seq_len) {
             cfg->is_recurrent[i] = (((i + 1) % cfg->full_attn_interval) != 0) ? 1 : 0;
         }
         /* Default L2 norm epsilon if not supplied by the GGUF */
-        if (cfg->norm_rms_eps == 0.0f) cfg->norm_rms_eps = 1e-6f;
+        if (cfg->norm_rms_eps == 0.0f) cfg->norm_rms_eps = DEFAULT_NORM_RMS_EPS;
     }
 
     /* Parse tensor info entries */
@@ -978,7 +981,7 @@ static void gdn_forward(
         {
             float ss = 0.0f;
             for (int j = 0; j < hd; j++) ss += o_h[j] * o_h[j];
-            float inv_rms = 1.0f / sqrtf(ss / (float)hd + 1e-6f);
+            float inv_rms = 1.0f / sqrtf(ss / (float)hd + l2_eps * l2_eps);
             const float *z_h = z_buf + (size_t)h * hd;
             for (int j = 0; j < hd; j++) {
                 float normed = o_h[j] * inv_rms * ssm_norm_w[j];
