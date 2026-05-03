@@ -282,19 +282,26 @@ static int parse_gguf(model_t *m, int max_seq_len) {
                    str_eq(key, "qwen35.vocab_size") ||
                    str_eq(key, "gemma4.vocab_size")) {
             int dummy; cfg->vocab_size = (int)skip_meta_value(&r, vtype, &dummy);
-        } else if (str_eq(key, "qwen35.ssm.conv_kernel")) {
+        } else if (str_eq(key, "qwen35.ssm.conv_kernel") ||
+                   str_eq(key, "qwen3.ssm.conv_kernel")) {
             int dummy; cfg->ssm_d_conv = (int)skip_meta_value(&r, vtype, &dummy);
-        } else if (str_eq(key, "qwen35.ssm.inner_size")) {
+        } else if (str_eq(key, "qwen35.ssm.inner_size") ||
+                   str_eq(key, "qwen3.ssm.inner_size")) {
             int dummy; cfg->ssm_d_inner = (int)skip_meta_value(&r, vtype, &dummy);
-        } else if (str_eq(key, "qwen35.ssm.state_size")) {
+        } else if (str_eq(key, "qwen35.ssm.state_size") ||
+                   str_eq(key, "qwen3.ssm.state_size")) {
             int dummy; cfg->ssm_d_state = (int)skip_meta_value(&r, vtype, &dummy);
-        } else if (str_eq(key, "qwen35.ssm.time_step_rank")) {
+        } else if (str_eq(key, "qwen35.ssm.time_step_rank") ||
+                   str_eq(key, "qwen3.ssm.time_step_rank")) {
             int dummy; cfg->ssm_dt_rank = (int)skip_meta_value(&r, vtype, &dummy);
-        } else if (str_eq(key, "qwen35.ssm.group_count")) {
+        } else if (str_eq(key, "qwen35.ssm.group_count") ||
+                   str_eq(key, "qwen3.ssm.group_count")) {
             int dummy; cfg->ssm_n_group = (int)skip_meta_value(&r, vtype, &dummy);
-        } else if (str_eq(key, "qwen35.attention.full_attention_interval")) {
+        } else if (str_eq(key, "qwen35.attention.full_attention_interval") ||
+                   str_eq(key, "qwen3.attention.full_attention_interval")) {
             int dummy; cfg->full_attn_interval = (int)skip_meta_value(&r, vtype, &dummy);
-        } else if (str_eq(key, "qwen35.attention.layer_norm_rms_epsilon")) {
+        } else if (str_eq(key, "qwen35.attention.layer_norm_rms_epsilon") ||
+                   str_eq(key, "qwen3.attention.layer_norm_rms_epsilon")) {
             if (vtype == GGUF_META_FLOAT32) {
                 cfg->norm_rms_eps = read_f32(&r);
             } else {
