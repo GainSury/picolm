@@ -25,6 +25,16 @@ typedef struct {
     float rope_freq_base; /* RoPE theta base (e.g. 10000.0) */
     int alignment;      /* GGUF data alignment */
     gguf_type_t weight_type; /* default weight quantization type */
+
+    /* SSM/GDN config for hybrid architectures (Qwen3.5, 0 = pure transformer) */
+    int ssm_d_state;          /* head dimension for K and V (= ssm_d_state) */
+    int ssm_d_inner;          /* SSM inner size (= n_v_heads * ssm_d_state) */
+    int ssm_d_conv;           /* depthwise conv kernel size (typically 4) */
+    int ssm_dt_rank;          /* number of V heads (ssm_time_step_rank) */
+    int ssm_n_group;          /* number of K heads (ssm_group_count) */
+    int full_attn_interval;   /* full attn every N layers, 0 = pure transformer */
+    float norm_rms_eps;       /* L2 norm epsilon used in GDN Q/K normalisation */
+    int is_recurrent[MAX_LAYERS]; /* 1 = GDN layer, 0 = full transformer attention */
 } model_config_t;
 
 /* ---- Per-layer weight pointers (into mmap) ---- */
@@ -44,6 +54,16 @@ typedef struct {
     const void *post_ffn_norm;   /* post-FFN normalization */
     const void *attn_q_norm;     /* per-head Q normalization (head_dim elements) */
     const void *attn_k_norm;     /* per-head K normalization (head_dim elements) */
+    /* SSM/GDN weights for Qwen3.5 recurrent layers (NULL for other architectures) */
+    const void *wqkv;       /* fused QKV input projection [n_embd → key_dim*2+value_dim] */
+    const void *wqkv_gate;  /* gate z projection [n_embd → value_dim] */
+    const void *ssm_alpha;  /* alpha weight [n_embd → n_v_heads] */
+    const void *ssm_beta;   /* beta weight  [n_embd → n_v_heads] */
+    const void *ssm_dt;     /* DT bias  [n_v_heads] */
+    const void *ssm_a;      /* A parameter [n_v_heads] */
+    const void *ssm_conv1d; /* depthwise conv kernel [d_conv, conv_dim] */
+    const void *ssm_norm;   /* GDN output norm weight [head_v_dim] */
+    const void *ssm_out;    /* GDN output projection [value_dim → n_embd] */
     /* Per-tensor quantization types */
     gguf_type_t type_attn_norm;
     gguf_type_t type_attn_q;
@@ -58,6 +78,15 @@ typedef struct {
     gguf_type_t type_post_ffn_norm;
     gguf_type_t type_attn_q_norm;
     gguf_type_t type_attn_k_norm;
+    gguf_type_t type_wqkv;
+    gguf_type_t type_wqkv_gate;
+    gguf_type_t type_ssm_alpha;
+    gguf_type_t type_ssm_beta;
+    gguf_type_t type_ssm_dt;
+    gguf_type_t type_ssm_a;
+    gguf_type_t type_ssm_conv1d;
+    gguf_type_t type_ssm_norm;
+    gguf_type_t type_ssm_out;
 } layer_weights_t;
 
 typedef struct {
@@ -102,6 +131,24 @@ typedef struct {
     float *post_ffn_norm_w[MAX_LAYERS];
     float *attn_q_norm_w[MAX_LAYERS];  /* head_dim elements, shared across heads */
     float *attn_k_norm_w[MAX_LAYERS];  /* head_dim elements, shared across KV heads */
+
+    /* SSM recurrent states for Qwen3.5 (NULL if not a hybrid model).
+     * Flat arrays; helper macros index by layer.
+     *   ssm_states  : [n_layers * n_v_heads * head_dim * head_dim] (zero-init = clear state)
+     *   conv_states : [n_layers * (d_conv-1) * conv_dim] */
+    float *ssm_states;
+    float *conv_states;
+    /* Pre-dequantized small SSM weights per layer (flat, indexed by layer index):
+     *   ssm_norm_w  : [n_layers * head_dim]
+     *   ssm_dt_w    : [n_layers * n_v_heads]
+     *   ssm_a_w     : [n_layers * n_v_heads]
+     *   ssm_conv1d_w: [n_layers * conv_dim * d_conv] */
+    float *ssm_norm_w;
+    float *ssm_dt_w;
+    float *ssm_a_w;
+    float *ssm_conv1d_w;
+    void  *ssm_block;    /* single calloc for all four SSM arrays above */
+    size_t ssm_block_size;
 
     /* Single allocation base */
     void *mem_block;

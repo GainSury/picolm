@@ -145,7 +145,7 @@ picoclaw agent -m "Search for weather in Tokyo"
 
 ## What is PicoLM?
 
-PicoLM is a **minimal, from-scratch LLM inference engine** written in ~2,500 lines of C11. It runs [TinyLlama 1.1B](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0), [Qwen3](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) (and other LLaMA/Qwen-architecture models in GGUF format) on hardware that most inference frameworks won't even consider:
+PicoLM is a **minimal, from-scratch LLM inference engine** written in ~2,500 lines of C11. It runs [TinyLlama 1.1B](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0), [Qwen3](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF), [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-0.8B) (and other LLaMA/Qwen-architecture models in GGUF format) on hardware that most inference frameworks won't even consider:
 
 - **Raspberry Pi Zero 2W** ($15, 512MB RAM, ARM Cortex-A53)
 - **Sipeed LicheeRV** ($12, 512MB RAM, RISC-V)
@@ -179,7 +179,7 @@ The model file (638MB) stays on disk. PicoLM **memory-maps** it and streams one 
 |---------|-------------|
 | **GGUF Native** | Reads GGUF v2/v3 files directly — no conversion needed |
 | **K-Quant Support** | Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_0, Q4_0, F16, F32 |
-| **Multi-architecture** | LLaMA family (TinyLlama, Mistral, …) **and Qwen2/Qwen3 family** |
+| **Multi-architecture** | LLaMA family (TinyLlama, Mistral, …), Qwen2/Qwen3 family **and Qwen3.5 (hybrid GDN)** |
 | **mmap Layer Streaming** | Model weights stay on disk; OS pages in one layer at a time |
 | **FP16 KV Cache** | Halves KV cache memory (44MB vs 88MB for 2048 context) |
 | **Flash Attention** | Online softmax — no O(seq_len) attention buffer needed |

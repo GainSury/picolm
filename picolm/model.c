@@ -235,30 +235,37 @@ static int parse_gguf(model_t *m, int max_seq_len) {
 
         if (str_eq(key, "llama.embedding_length") || str_eq(key, "general.embedding_length") ||
             str_eq(key, "qwen2.embedding_length") || str_eq(key, "qwen3.embedding_length") ||
+            str_eq(key, "qwen35.embedding_length") ||
             str_eq(key, "gemma4.embedding_length")) {
             int dummy; cfg->n_embd = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.feed_forward_length") || str_eq(key, "general.feed_forward_length") ||
                    str_eq(key, "qwen2.feed_forward_length") || str_eq(key, "qwen3.feed_forward_length") ||
+                   str_eq(key, "qwen35.feed_forward_length") ||
                    str_eq(key, "gemma4.feed_forward_length")) {
             int dummy; cfg->n_ffn = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.attention.head_count") ||
                    str_eq(key, "qwen2.attention.head_count") || str_eq(key, "qwen3.attention.head_count") ||
+                   str_eq(key, "qwen35.attention.head_count") ||
                    str_eq(key, "gemma4.attention.head_count")) {
             int dummy; cfg->n_heads = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.attention.head_count_kv") ||
                    str_eq(key, "qwen2.attention.head_count_kv") || str_eq(key, "qwen3.attention.head_count_kv") ||
+                   str_eq(key, "qwen35.attention.head_count_kv") ||
                    str_eq(key, "gemma4.attention.head_count_kv")) {
             int dummy; cfg->n_kv_heads = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.block_count") ||
                    str_eq(key, "qwen2.block_count") || str_eq(key, "qwen3.block_count") ||
+                   str_eq(key, "qwen35.block_count") ||
                    str_eq(key, "gemma4.block_count")) {
             int dummy; cfg->n_layers = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.context_length") ||
                    str_eq(key, "qwen2.context_length") || str_eq(key, "qwen3.context_length") ||
+                   str_eq(key, "qwen35.context_length") ||
                    str_eq(key, "gemma4.context_length")) {
             int dummy; cfg->max_seq_len = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.rope.freq_base") ||
                    str_eq(key, "qwen2.rope.freq_base") || str_eq(key, "qwen3.rope.freq_base") ||
+                   str_eq(key, "qwen35.rope.freq_base") ||
                    str_eq(key, "gemma4.rope.freq_base")) {
             if (vtype == GGUF_META_FLOAT32) {
                 cfg->rope_freq_base = read_f32(&r);
@@ -269,8 +276,27 @@ static int parse_gguf(model_t *m, int max_seq_len) {
             int dummy; cfg->alignment = (int)skip_meta_value(&r, vtype, &dummy);
         } else if (str_eq(key, "llama.vocab_size") ||
                    str_eq(key, "qwen2.vocab_size") || str_eq(key, "qwen3.vocab_size") ||
+                   str_eq(key, "qwen35.vocab_size") ||
                    str_eq(key, "gemma4.vocab_size")) {
             int dummy; cfg->vocab_size = (int)skip_meta_value(&r, vtype, &dummy);
+        } else if (str_eq(key, "qwen35.ssm.conv_kernel")) {
+            int dummy; cfg->ssm_d_conv = (int)skip_meta_value(&r, vtype, &dummy);
+        } else if (str_eq(key, "qwen35.ssm.inner_size")) {
+            int dummy; cfg->ssm_d_inner = (int)skip_meta_value(&r, vtype, &dummy);
+        } else if (str_eq(key, "qwen35.ssm.state_size")) {
+            int dummy; cfg->ssm_d_state = (int)skip_meta_value(&r, vtype, &dummy);
+        } else if (str_eq(key, "qwen35.ssm.time_step_rank")) {
+            int dummy; cfg->ssm_dt_rank = (int)skip_meta_value(&r, vtype, &dummy);
+        } else if (str_eq(key, "qwen35.ssm.group_count")) {
+            int dummy; cfg->ssm_n_group = (int)skip_meta_value(&r, vtype, &dummy);
+        } else if (str_eq(key, "qwen35.attention.full_attention_interval")) {
+            int dummy; cfg->full_attn_interval = (int)skip_meta_value(&r, vtype, &dummy);
+        } else if (str_eq(key, "qwen35.attention.layer_norm_rms_epsilon")) {
+            if (vtype == GGUF_META_FLOAT32) {
+                cfg->norm_rms_eps = read_f32(&r);
+            } else {
+                int dummy; skip_meta_value(&r, vtype, &dummy);
+            }
         } else if (str_eq(key, "tokenizer.ggml.model")) {
             if (vtype == GGUF_META_STRING) {
                 gguf_str_t tok_model = read_gguf_string(&r);
@@ -318,6 +344,16 @@ static int parse_gguf(model_t *m, int max_seq_len) {
         cfg->max_seq_len = max_seq_len;
     }
     cfg->head_dim = cfg->n_embd / cfg->n_heads;
+
+    /* For Qwen3.5: derive per-layer recurrent flag from full_attn_interval.
+     * Layer i is a full-attention layer when (i+1) is divisible by the interval. */
+    if (cfg->full_attn_interval > 0) {
+        for (int i = 0; i < cfg->n_layers && i < MAX_LAYERS; i++) {
+            cfg->is_recurrent[i] = (((i + 1) % cfg->full_attn_interval) != 0) ? 1 : 0;
+        }
+        /* Default L2 norm epsilon if not supplied by the GGUF */
+        if (cfg->norm_rms_eps == 0.0f) cfg->norm_rms_eps = 1e-6f;
+    }
 
     /* Parse tensor info entries */
     typedef struct {
@@ -407,6 +443,25 @@ static int parse_gguf(model_t *m, int max_seq_len) {
                     lw->attn_q_norm = ptr; lw->type_attn_q_norm = qtype;
                 } else if (strcmp(suffix, "attn_k_norm.weight") == 0) {
                     lw->attn_k_norm = ptr; lw->type_attn_k_norm = qtype;
+                /* Qwen3.5 GDN (recurrent) layer tensors */
+                } else if (strcmp(suffix, "attn_qkv.weight") == 0) {
+                    lw->wqkv = ptr; lw->type_wqkv = qtype;
+                } else if (strcmp(suffix, "attn_gate.weight") == 0) {
+                    lw->wqkv_gate = ptr; lw->type_wqkv_gate = qtype;
+                } else if (strcmp(suffix, "ssm_alpha.weight") == 0) {
+                    lw->ssm_alpha = ptr; lw->type_ssm_alpha = qtype;
+                } else if (strcmp(suffix, "ssm_beta.weight") == 0) {
+                    lw->ssm_beta = ptr; lw->type_ssm_beta = qtype;
+                } else if (strcmp(suffix, "ssm_dt.bias") == 0) {
+                    lw->ssm_dt = ptr; lw->type_ssm_dt = qtype;
+                } else if (strcmp(suffix, "ssm_a") == 0) {
+                    lw->ssm_a = ptr; lw->type_ssm_a = qtype;
+                } else if (strcmp(suffix, "ssm_conv1d.weight") == 0) {
+                    lw->ssm_conv1d = ptr; lw->type_ssm_conv1d = qtype;
+                } else if (strcmp(suffix, "ssm_norm.weight") == 0) {
+                    lw->ssm_norm = ptr; lw->type_ssm_norm = qtype;
+                } else if (strcmp(suffix, "ssm_out.weight") == 0) {
+                    lw->ssm_out = ptr; lw->type_ssm_out = qtype;
                 }
             }
         }
@@ -441,6 +496,11 @@ static int parse_gguf(model_t *m, int max_seq_len) {
     fprintf(stderr, "  n_layers=%d, vocab_size=%d, max_seq=%d\n",
             cfg->n_layers, cfg->vocab_size, cfg->max_seq_len);
     fprintf(stderr, "  head_dim=%d, rope_base=%.1f\n", cfg->head_dim, cfg->rope_freq_base);
+    if (cfg->full_attn_interval > 0) {
+        fprintf(stderr, "  ssm: d_state=%d d_inner=%d d_conv=%d dt_rank=%d n_group=%d full_attn_interval=%d\n",
+                cfg->ssm_d_state, cfg->ssm_d_inner, cfg->ssm_d_conv,
+                cfg->ssm_dt_rank, cfg->ssm_n_group, cfg->full_attn_interval);
+    }
 
     free(tinfos);
     return 0;
@@ -489,10 +549,18 @@ static int allocate_run_state(model_t *m) {
 
     /* Norm weights: (n_layers * 2 + 1) * n_embd floats for pre-norms + output norm.
      * For Gemma 4, also include post_attn_norm, post_ffn_norm (n_embd each per layer)
-     * and attn_q_norm, attn_k_norm (head_dim each per layer). */
+     * and attn_q_norm, attn_k_norm (head_dim each per layer).
+     * For Qwen3.5, attn_norm + post_attn_norm per layer (no separate ffn_norm). */
     int has_post_norm = (m->weights.layers[0].post_attn_norm != NULL);
     int has_qk_norm   = (m->weights.layers[0].attn_q_norm   != NULL);
-    size_t n_norm = (size_t)(c->n_layers * 2 + 1) * (size_t)c->n_embd;
+    /* Count layers that have an ffn_norm (pure transformer layers) */
+    int n_ffn_norm_layers = 0;
+    for (int l = 0; l < c->n_layers; l++) {
+        if (m->weights.layers[l].ffn_norm != NULL) n_ffn_norm_layers++;
+    }
+    size_t n_norm = (size_t)c->n_layers * (size_t)c->n_embd;  /* attn_norm per layer */
+    n_norm += (size_t)n_ffn_norm_layers * (size_t)c->n_embd;   /* ffn_norm where present */
+    n_norm += 1 * (size_t)c->n_embd;                           /* output_norm */
     if (has_post_norm) n_norm += (size_t)c->n_layers * 2 * (size_t)c->n_embd;
     if (has_qk_norm)   n_norm += (size_t)c->n_layers * 2 * (size_t)c->head_dim;
     size_t sz_norm = n_norm * sizeof(float);
@@ -505,9 +573,34 @@ static int allocate_run_state(model_t *m) {
     size_t kv_elements = (size_t)c->n_layers * c->max_seq_len * kv_dim;
     size_t sz_kv = kv_elements * sizeof(uint16_t) * 2; /* key + val */
 
-    fprintf(stderr, "Allocating %.2f MB for runtime state (+ %.2f MB FP16 KV cache)\n",
+    /* SSM state allocation for Qwen3.5 hybrid models */
+    size_t ssm_block_sz = 0;
+    if (c->full_attn_interval > 0 && c->ssm_d_state > 0 && c->ssm_dt_rank > 0) {
+        int head_dim_ssm = c->ssm_d_state;    /* head_k_dim == head_v_dim */
+        int n_v_heads    = c->ssm_dt_rank;
+        int n_k_heads    = c->ssm_n_group;
+        int d_conv       = c->ssm_d_conv;
+        int conv_dim     = head_dim_ssm * n_k_heads * 2 + head_dim_ssm * n_v_heads;
+        /* ssm_states  : n_layers * n_v_heads * head_dim * head_dim */
+        size_t sz_ssm_state  = (size_t)c->n_layers * n_v_heads * head_dim_ssm * head_dim_ssm;
+        /* conv_states : n_layers * (d_conv-1) * conv_dim */
+        size_t sz_conv_state = (size_t)c->n_layers * (d_conv > 1 ? d_conv - 1 : 1) * conv_dim;
+        /* ssm_norm_w  : n_layers * head_dim */
+        size_t sz_ssm_norm   = (size_t)c->n_layers * head_dim_ssm;
+        /* ssm_dt_w    : n_layers * n_v_heads */
+        size_t sz_ssm_dt     = (size_t)c->n_layers * n_v_heads;
+        /* ssm_a_w     : n_layers * n_v_heads */
+        size_t sz_ssm_a      = (size_t)c->n_layers * n_v_heads;
+        /* ssm_conv1d_w: n_layers * conv_dim * d_conv */
+        size_t sz_ssm_conv1d = (size_t)c->n_layers * conv_dim * d_conv;
+        ssm_block_sz = (sz_ssm_state + sz_conv_state +
+                        sz_ssm_norm + sz_ssm_dt + sz_ssm_a + sz_ssm_conv1d) * sizeof(float);
+    }
+
+    fprintf(stderr, "Allocating %.2f MB for runtime state (+ %.2f MB FP16 KV cache%s)\n",
             (double)total / (1024.0 * 1024.0),
-            (double)sz_kv / (1024.0 * 1024.0));
+            (double)sz_kv  / (1024.0 * 1024.0),
+            ssm_block_sz > 0 ? " + SSM states" : "");
 
     s->mem_block = calloc(1, total);
     if (!s->mem_block) {
@@ -524,6 +617,25 @@ static int allocate_run_state(model_t *m) {
         return -1;
     }
     s->kv_size = sz_kv;
+
+    /* Allocate SSM block (zeroed — recurrent states must start as zero) */
+    s->ssm_block      = NULL;
+    s->ssm_block_size = ssm_block_sz;
+    s->ssm_states     = NULL;
+    s->conv_states    = NULL;
+    s->ssm_norm_w     = NULL;
+    s->ssm_dt_w       = NULL;
+    s->ssm_a_w        = NULL;
+    s->ssm_conv1d_w   = NULL;
+    if (ssm_block_sz > 0) {
+        s->ssm_block = calloc(1, ssm_block_sz);
+        if (!s->ssm_block) {
+            fprintf(stderr, "OOM: cannot allocate %zu bytes for SSM states\n", ssm_block_sz);
+            free(s->kv_block);
+            free(s->mem_block);
+            return -1;
+        }
+    }
 
     /* Carve float pointers */
     float *p = (float *)s->mem_block;
@@ -556,10 +668,14 @@ static int allocate_run_state(model_t *m) {
                        m->weights.layers[l].type_attn_norm);
         nw += c->n_embd;
 
-        s->ffn_norm_w[l] = nw;
-        dequantize_row(m->weights.layers[l].ffn_norm, nw, c->n_embd,
-                       m->weights.layers[l].type_ffn_norm);
-        nw += c->n_embd;
+        if (m->weights.layers[l].ffn_norm) {
+            s->ffn_norm_w[l] = nw;
+            dequantize_row(m->weights.layers[l].ffn_norm, nw, c->n_embd,
+                           m->weights.layers[l].type_ffn_norm);
+            nw += c->n_embd;
+        } else {
+            s->ffn_norm_w[l] = NULL;
+        }
     }
     s->output_norm_w = nw;
     dequantize_row(m->weights.output_norm, nw, c->n_embd,
@@ -612,6 +728,74 @@ static int allocate_run_state(model_t *m) {
     /* Pre-compute RoPE tables (eliminates powf/cosf/sinf from hot path) */
     init_rope_tables(s, c);
 
+    /* Set up SSM state and weight pointers, and pre-dequantize small SSM tensors */
+    if (s->ssm_block && c->ssm_d_state > 0 && c->ssm_dt_rank > 0) {
+        int hd       = c->ssm_d_state;   /* head_dim for both K and V */
+        int n_vh     = c->ssm_dt_rank;   /* num V heads */
+        int n_kh     = c->ssm_n_group;   /* num K heads */
+        int dc       = c->ssm_d_conv;
+        int conv_dim = hd * n_kh * 2 + hd * n_vh;
+        int dconv1   = (dc > 1) ? dc - 1 : 1; /* conv state depth */
+
+        float *sp = (float *)s->ssm_block;
+
+        /* ssm_states: n_layers * n_vh * hd * hd */
+        s->ssm_states = sp;
+        sp += (size_t)c->n_layers * n_vh * hd * hd;
+
+        /* conv_states: n_layers * dconv1 * conv_dim */
+        s->conv_states = sp;
+        sp += (size_t)c->n_layers * dconv1 * conv_dim;
+
+        /* ssm_norm_w: n_layers * hd */
+        s->ssm_norm_w = sp;
+        sp += (size_t)c->n_layers * hd;
+
+        /* ssm_dt_w: n_layers * n_vh */
+        s->ssm_dt_w = sp;
+        sp += (size_t)c->n_layers * n_vh;
+
+        /* ssm_a_w: n_layers * n_vh */
+        s->ssm_a_w = sp;
+        sp += (size_t)c->n_layers * n_vh;
+
+        /* ssm_conv1d_w: n_layers * conv_dim * dc */
+        s->ssm_conv1d_w = sp;
+        /* sp += c->n_layers * conv_dim * dc; (end of block) */
+
+        /* Dequantize per-layer SSM small tensors */
+        for (int l = 0; l < c->n_layers; l++) {
+            layer_weights_t *lw = &m->weights.layers[l];
+            if (!c->is_recurrent[l]) continue; /* skip full-attention layers */
+
+            /* ssm_norm weight: [hd] */
+            if (lw->ssm_norm) {
+                dequantize_row(lw->ssm_norm, s->ssm_norm_w + (size_t)l * hd,
+                               hd, lw->type_ssm_norm);
+            }
+            /* ssm_dt bias: [n_vh] */
+            if (lw->ssm_dt) {
+                dequantize_row(lw->ssm_dt, s->ssm_dt_w + (size_t)l * n_vh,
+                               n_vh, lw->type_ssm_dt);
+            }
+            /* ssm_a parameter: [n_vh] */
+            if (lw->ssm_a) {
+                dequantize_row(lw->ssm_a, s->ssm_a_w + (size_t)l * n_vh,
+                               n_vh, lw->type_ssm_a);
+            }
+            /* ssm_conv1d kernel: [d_conv, conv_dim] stored as conv_dim rows of d_conv elems */
+            if (lw->ssm_conv1d) {
+                float *dst = s->ssm_conv1d_w + (size_t)l * conv_dim * dc;
+                size_t row_bytes = gguf_type_row_size(lw->type_ssm_conv1d, dc);
+                const uint8_t *src = (const uint8_t *)lw->ssm_conv1d;
+                for (int ch = 0; ch < conv_dim; ch++) {
+                    dequantize_row(src + (size_t)ch * row_bytes,
+                                   dst + ch * dc, dc, lw->type_ssm_conv1d);
+                }
+            }
+        }
+    }
+
     return 0;
 }
 
@@ -632,7 +816,168 @@ int model_load(model_t *m, const char *path, int max_seq_len) {
  *   - FP16 KV cache (halves memory bandwidth in attention)
  *   - Flash attention / online softmax (single pass, no score buffer)
  *   - Pre-computed RoPE tables (table lookup instead of trig)
+ *   - Qwen3.5 hybrid GDN (Gated Delta Network) layers
  * ================================================================ */
+
+/* ---- Small math helpers used by the GDN forward pass ---- */
+
+/* sigmoid(x) = 1 / (1 + exp(-x)) */
+static float sigmoidf(float x) {
+    return 1.0f / (1.0f + expf(-x));
+}
+
+/* softplus(x) = log(1 + exp(x)), numerically stable */
+static float softplusf(float x) {
+    if (x > 20.0f) return x;
+    return log1pf(expf(x));
+}
+
+/* In-place L2 normalisation: x[i] /= sqrt(sum(x^2) + eps^2) */
+static void l2_norm_inplace(float *x, int n, float eps) {
+    float sq = eps * eps;
+    for (int i = 0; i < n; i++) sq += x[i] * x[i];
+    float inv = 1.0f / sqrtf(sq);
+    for (int i = 0; i < n; i++) x[i] *= inv;
+}
+
+/* ---- GDN (Gated Delta Network) single-token forward pass ----
+ *
+ * Implements the autoregressive Gated Delta Rule for one token:
+ *   for each v-head h:
+ *     state_h *= forget_h                         (decay)
+ *     sk[j]    = sum_i state_h[i*hd+j] * k_h[i]  (state lookup)
+ *     d[j]     = beta_h * (v_h[j] - sk[j])        (delta error)
+ *     state_h[i*hd+j] += k_h[i] * d[j]            (rank-1 update)
+ *     o_h[j]   = scale * sum_i state_h[i*hd+j]*q_h[i]  (output)
+ *
+ * Buffer contract:
+ *   qkv_buf   : size >= conv_dim  (caller may use s->hb)
+ *   z_buf     : size >= val_dim   (caller may use s->hb2)
+ *   accum_buf : size >= val_dim   (may alias xb — safe because step-1 reads finish before
+ *                                  steps 5-6 write; caller may pass s->xb)
+ *   result    : size >= dim       (caller may use s->xb2)
+ */
+static void gdn_forward(
+    float       *xb,            /* [dim] layer input; also used as accum below     */
+    layer_weights_t *lw,
+    const float *ssm_norm_w,    /* [hd]               pre-dequantized GDN out-norm */
+    const float *ssm_dt_w,      /* [n_vh]             pre-dequantized DT bias      */
+    const float *ssm_a_w,       /* [n_vh]             pre-dequantized A parameter  */
+    const float *ssm_conv1d_w,  /* [conv_dim * d_conv] channel-major, pre-deq.     */
+    float       *ssm_state,     /* [n_vh * hd * hd]   mutable recurrent state      */
+    float       *conv_state,    /* [(d_conv-1)*conv_dim] mutable conv history      */
+    float       *qkv_buf,       /* scratch >= conv_dim (e.g. s->hb)                */
+    float       *z_buf,         /* scratch >= val_dim  (e.g. s->hb2)               */
+    float       *accum_buf,     /* [>= val_dim] accumulation; may alias xb         */
+    float       *result,        /* [dim] final output  (e.g. s->xb2)               */
+    int dim, int hd, int n_vh, int n_kh, int d_conv, float l2_eps
+) {
+    int key_dim  = hd * n_kh;
+    int val_dim  = hd * n_vh;
+    int conv_dim = key_dim * 2 + val_dim;
+    int dconv1   = (d_conv > 1) ? d_conv - 1 : 1;
+
+    /* Step 1: input projections (xb is read-only in this block) */
+    matmul(qkv_buf,   xb, lw->wqkv,      dim, conv_dim, lw->type_wqkv);
+    matmul(z_buf,     xb, lw->wqkv_gate, dim, val_dim,  lw->type_wqkv_gate);
+    float beta_raw[64], alpha_raw[64]; /* n_vh <= 64 in practice */
+    matmul(beta_raw,  xb, lw->ssm_beta,  dim, n_vh, lw->type_ssm_beta);
+    matmul(alpha_raw, xb, lw->ssm_alpha, dim, n_vh, lw->type_ssm_alpha);
+
+    /* Step 2: depthwise 1-D conv (in-place in qkv_buf) + conv state update.
+     *
+     * For channel j, save qkv_buf[j] as `orig` first, compute conv output and
+     * overwrite qkv_buf[j], then update conv_state using `orig` — all in one pass,
+     * no extra allocation needed.
+     */
+    for (int j = 0; j < conv_dim; j++) {
+        const float *k_j = ssm_conv1d_w + (size_t)j * d_conv;
+        float       *cs_j = conv_state  + (size_t)j * dconv1;
+        float orig = qkv_buf[j];                     /* current token input */
+        float acc  = k_j[d_conv - 1] * orig;         /* current tap */
+        for (int t = 0; t < dconv1; t++) acc += k_j[t] * cs_j[t];
+        qkv_buf[j] = acc * (1.0f / (1.0f + expf(-acc))); /* SiLU in-place */
+        /* shift history window: drop oldest tap, add current token */
+        for (int t = 0; t < dconv1 - 1; t++) cs_j[t] = cs_j[t + 1];
+        if (dconv1 > 0) cs_j[dconv1 - 1] = orig;
+    }
+
+    /* Step 3: split silu(conv_out) and L2-normalise Q/K per k-head */
+    float *q_c = qkv_buf;               /* [key_dim] */
+    float *k_c = qkv_buf + key_dim;     /* [key_dim] */
+    float *v_c = qkv_buf + 2 * key_dim; /* [val_dim] */
+    for (int h = 0; h < n_kh; h++) {
+        l2_norm_inplace(q_c + h * hd, hd, l2_eps);
+        l2_norm_inplace(k_c + h * hd, hd, l2_eps);
+    }
+
+    /* Step 4: per-head forget gate and beta */
+    float forget_arr[64], beta_arr[64];
+    for (int h = 0; h < n_vh; h++) {
+        float alpha_sp = softplusf(alpha_raw[h] + ssm_dt_w[h]);
+        forget_arr[h] = expf(alpha_sp * ssm_a_w[h]); /* ssm_a = -exp(A_log) < 0 */
+        beta_arr[h]   = sigmoidf(beta_raw[h]);
+    }
+
+    /* Steps 5-6: delta rule + gated RMS-norm per V head.
+     * Writes to accum_buf (may alias xb; safe because step-1 reads are done). */
+    float scale = 1.0f / sqrtf((float)hd);
+    for (int h = 0; h < n_vh; h++) {
+        int kh = (n_vh > n_kh) ? (h * n_kh / n_vh) : h;
+        float       *state_h = ssm_state + (size_t)h  * hd * hd;
+        const float *k_h     = k_c       + kh * hd;
+        const float *q_h     = q_c       + kh * hd;
+        const float *v_h     = v_c       + h  * hd;
+        float       *o_h     = accum_buf + h  * hd;
+
+        /* decay */
+        float fh = forget_arr[h];
+        for (int ij = 0; ij < hd * hd; ij++) state_h[ij] *= fh;
+
+        /* sk[j] = state_h^T @ k_h */
+        float sk[256]; /* hd typically 64 */
+        for (int j = 0; j < hd; j++) {
+            float a = 0.0f;
+            for (int i = 0; i < hd; i++) a += state_h[(size_t)i * hd + j] * k_h[i];
+            sk[j] = a;
+        }
+
+        /* delta d = beta * (v - sk) */
+        float d_arr[256];
+        float bh = beta_arr[h];
+        for (int j = 0; j < hd; j++) d_arr[j] = bh * (v_h[j] - sk[j]);
+
+        /* rank-1 state update */
+        for (int i = 0; i < hd; i++) {
+            float ki = k_h[i];
+            float *row = state_h + (size_t)i * hd;
+            for (int j = 0; j < hd; j++) row[j] += ki * d_arr[j];
+        }
+
+        /* output o_h = scale * state_h^T @ q_h */
+        for (int j = 0; j < hd; j++) {
+            float a = 0.0f;
+            for (int i = 0; i < hd; i++) a += state_h[(size_t)i * hd + j] * q_h[i];
+            o_h[j] = a * scale;
+        }
+
+        /* per-head gated RMS-norm + SiLU gate */
+        {
+            float ss = 0.0f;
+            for (int j = 0; j < hd; j++) ss += o_h[j] * o_h[j];
+            float inv_rms = 1.0f / sqrtf(ss / (float)hd + 1e-6f);
+            const float *z_h = z_buf + (size_t)h * hd;
+            for (int j = 0; j < hd; j++) {
+                float normed = o_h[j] * inv_rms * ssm_norm_w[j];
+                float z      = z_h[j];
+                o_h[j] = normed * (z / (1.0f + expf(-z))); /* *= silu(z) */
+            }
+        }
+    }
+
+    /* Step 7: output projection result[dim] = ssm_out @ accum_buf[val_dim] */
+    matmul(result, accum_buf, lw->ssm_out, val_dim, dim, lw->type_ssm_out);
+}
 
 float *model_forward(model_t *m, int token, int pos) {
     model_config_t *c = &m->config;
@@ -664,11 +1009,85 @@ float *model_forward(model_t *m, int token, int pos) {
     for (int l = 0; l < c->n_layers; l++) {
         layer_weights_t *lw = &w->layers[l];
 
-        /* ---- Attention ---- */
+        /* Pre-attention RMSNorm (shared by all architectures) */
         rmsnorm(s->xb, s->x, s->attn_norm_w[l], dim);
 
-        /* QKV projections */
-        matmul(s->q, s->xb, lw->attn_q, dim, dim, lw->type_attn_q);
+        /* ================================================================
+         * Qwen3.5 GDN (recurrent) layer
+         * ================================================================ */
+        if (c->is_recurrent[l]) {
+            int hd    = c->ssm_d_state;
+            int n_vh  = c->ssm_dt_rank;
+            int n_kh  = c->ssm_n_group;
+            int dc    = c->ssm_d_conv;
+            int val_dim  = hd * n_vh;
+            int key_dim  = hd * n_kh;
+            int conv_dim = key_dim * 2 + val_dim;
+            int dconv1   = (dc > 1) ? dc - 1 : 1;
+
+            float *ssm_state_l  = s->ssm_states  + (size_t)l * n_vh * hd * hd;
+            float *conv_state_l = s->conv_states  + (size_t)l * dconv1 * conv_dim;
+
+            /* s->hb  : qkv_buf  (n_ffn >= conv_dim) */
+            /* s->hb2 : z_buf    (n_ffn >= val_dim)  */
+            /* s->xb  : accum_buf (n_embd >= val_dim; xb read-only in step-1, then reused) */
+            /* s->xb2 : result   (n_embd = dim)      */
+            gdn_forward(
+                s->xb,
+                lw,
+                s->ssm_norm_w   + (size_t)l * hd,
+                s->ssm_dt_w     + (size_t)l * n_vh,
+                s->ssm_a_w      + (size_t)l * n_vh,
+                s->ssm_conv1d_w + (size_t)l * conv_dim * dc,
+                ssm_state_l, conv_state_l,
+                s->hb, s->hb2, s->xb, s->xb2,
+                dim, hd, n_vh, n_kh, dc, c->norm_rms_eps
+            );
+
+            /* Post-GDN normalization (Qwen3.5 uses post_attn_norm here) */
+            if (s->post_attn_norm_w[l]) {
+                rmsnorm(s->xb2, s->xb2, s->post_attn_norm_w[l], dim);
+            }
+            vec_add(s->x, s->xb2, dim);
+
+            /* FFN: use post_attn_norm as pre-FFN norm for Qwen3.5 (no ffn_norm) */
+            const float *ffn_pre_norm = s->ffn_norm_w[l]
+                                        ? s->ffn_norm_w[l]
+                                        : s->post_attn_norm_w[l];
+            rmsnorm(s->xb, s->x, ffn_pre_norm, dim);
+
+            matmul(s->hb,  s->xb, lw->ffn_gate, dim, n_ffn, lw->type_ffn_gate);
+            matmul(s->hb2, s->xb, lw->ffn_up,   dim, n_ffn, lw->type_ffn_up);
+            silu(s->hb, n_ffn);
+            elemwise_mul(s->hb, s->hb, s->hb2, n_ffn);
+            matmul(s->xb, s->hb, lw->ffn_down, n_ffn, dim, lw->type_ffn_down);
+            if (s->post_ffn_norm_w[l]) {
+                rmsnorm(s->xb, s->xb, s->post_ffn_norm_w[l], dim);
+            }
+            vec_add(s->x, s->xb, dim);
+            continue; /* next layer */
+        }
+
+        /* ================================================================
+         * Full-attention layer (standard transformer or Qwen3.5 full-attn)
+         * ================================================================ */
+
+        /* QKV projections.
+         * For Qwen3.5 full-attention layers, attn_q.weight outputs Q+gate (dim*2),
+         * stored into hb (n_ffn >= dim*2).  Pure transformer layers use the standard
+         * path writing directly into s->q. */
+        int is_qwen35 = (c->full_attn_interval > 0);
+        float *gate_ptr = NULL; /* pointer to Q gate values (Qwen3.5 only) */
+
+        if (is_qwen35 && lw->wqkv == NULL) {
+            /* Qwen3.5 full-attention: attn_q produces Q+gate fused (dim*2 outputs) */
+            matmul(s->hb, s->xb, lw->attn_q, dim, dim * 2, lw->type_attn_q);
+            /* Copy Q into s->q; keep gate in hb[dim..2*dim-1] */
+            memcpy(s->q, s->hb, (size_t)dim * sizeof(float));
+            gate_ptr = s->hb + dim; /* gate lives in second half of hb */
+        } else {
+            matmul(s->q, s->xb, lw->attn_q, dim, dim, lw->type_attn_q);
+        }
 
         /* K and V: project into float temp, then store as FP16 in cache */
         float *k_tmp = s->xb2; /* reuse xb2 as temp for K (kv_dim <= dim) */
@@ -679,11 +1098,25 @@ float *model_forward(model_t *m, int token, int pos) {
         uint16_t *vcache_layer = s->val_cache + (size_t)l * seq_len * kv_dim;
         uint16_t *key_pos_fp16 = kcache_layer + (size_t)pos * kv_dim;
 
+        /* Per-head QK normalization:
+         *   Gemma 4: applied AFTER RoPE
+         *   Qwen3.5 full-attention: applied BEFORE RoPE */
+        if (is_qwen35 && s->attn_q_norm_w[l]) {
+            for (int h = 0; h < n_heads; h++) {
+                rmsnorm(s->q + h * head_dim, s->q + h * head_dim,
+                        s->attn_q_norm_w[l], head_dim);
+            }
+            for (int h = 0; h < n_kv_heads; h++) {
+                rmsnorm(k_tmp + h * head_dim, k_tmp + h * head_dim,
+                        s->attn_k_norm_w[l], head_dim);
+            }
+        }
+
         /* Apply RoPE to Q and K (using pre-computed tables) */
         rope(s->q, k_tmp, head_dim, n_heads, n_kv_heads, cos_pos, sin_pos);
 
-        /* Per-head QK normalization (Gemma 4): applied after RoPE */
-        if (s->attn_q_norm_w[l]) {
+        /* Per-head QK normalization (Gemma 4 style): applied AFTER RoPE */
+        if (!is_qwen35 && s->attn_q_norm_w[l]) {
             for (int h = 0; h < n_heads; h++) {
                 rmsnorm(s->q + h * head_dim, s->q + h * head_dim,
                         s->attn_q_norm_w[l], head_dim);
@@ -773,16 +1206,30 @@ float *model_forward(model_t *m, int token, int pos) {
             }
         }
 
+        /* Apply sigmoid Q-gate (Qwen3.5 full-attention only) */
+        if (gate_ptr) {
+            for (int i = 0; i < dim; i++) {
+                s->xb[i] *= sigmoidf(gate_ptr[i]);
+            }
+        }
+
         /* Output projection */
         matmul(s->xb2, s->xb, lw->attn_output, dim, dim, lw->type_attn_output);
-        /* Post-attention normalization (Gemma 4) */
+        /* Post-attention normalization (Gemma 4 / Qwen3.5) */
         if (s->post_attn_norm_w[l]) {
             rmsnorm(s->xb2, s->xb2, s->post_attn_norm_w[l], dim);
         }
         vec_add(s->x, s->xb2, dim);
 
         /* ---- FFN (SwiGLU) ---- */
-        rmsnorm(s->xb, s->x, s->ffn_norm_w[l], dim);
+        /* For Qwen3.5 full-attention layers, use post_attn_norm as pre-FFN norm
+         * when no separate ffn_norm exists. */
+        {
+            const float *ffn_pre_norm = s->ffn_norm_w[l]
+                                        ? s->ffn_norm_w[l]
+                                        : s->post_attn_norm_w[l];
+            rmsnorm(s->xb, s->x, ffn_pre_norm, dim);
+        }
 
         matmul(s->hb,  s->xb, lw->ffn_gate, dim, n_ffn, lw->type_ffn_gate);
         matmul(s->hb2, s->xb, lw->ffn_up,   dim, n_ffn, lw->type_ffn_up);
@@ -815,6 +1262,10 @@ void model_free(model_t *m) {
     if (m->state.kv_block) {
         free(m->state.kv_block);
         m->state.kv_block = NULL;
+    }
+    if (m->state.ssm_block) {
+        free(m->state.ssm_block);
+        m->state.ssm_block = NULL;
     }
     munmap_file(m);
 }
