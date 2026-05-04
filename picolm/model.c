@@ -445,7 +445,7 @@ static int parse_gguf(model_t *m, int max_seq_len) {
                     lw->ffn_down = ptr; lw->type_ffn_down = qtype;
                 } else if (strcmp(suffix, "ffn_up.weight") == 0) {
                     lw->ffn_up = ptr; lw->type_ffn_up = qtype;
-                } else if (strcmp(suffix, "post_attn_norm.weight") == 0) {
+                } else if (strcmp(suffix, "post_attention_norm.weight") == 0) {
                     lw->post_attn_norm = ptr; lw->type_post_attn_norm = qtype;
                 } else if (strcmp(suffix, "post_ffn_norm.weight") == 0) {
                     lw->post_ffn_norm = ptr; lw->type_post_ffn_norm = qtype;
@@ -561,8 +561,13 @@ static int allocate_run_state(model_t *m) {
      * For Gemma 4, also include post_attn_norm, post_ffn_norm (n_embd each per layer)
      * and attn_q_norm, attn_k_norm (head_dim each per layer).
      * For Qwen3.5, attn_norm + post_attn_norm per layer (no separate ffn_norm). */
-    int has_post_norm = (m->weights.layers[0].post_attn_norm != NULL);
-    int has_qk_norm   = (m->weights.layers[0].attn_q_norm   != NULL);
+    /* Determine which optional norm flavours are present by scanning all layers
+     * (layer 0 may be recurrent and lack norms that full-attention layers have). */
+    int has_post_norm = 0, has_qk_norm = 0;
+    for (int l = 0; l < c->n_layers; l++) {
+        if (m->weights.layers[l].post_attn_norm) has_post_norm = 1;
+        if (m->weights.layers[l].attn_q_norm)   has_qk_norm   = 1;
+    }
     /* Count layers that have an ffn_norm (pure transformer layers) */
     int n_ffn_norm_layers = 0;
     for (int l = 0; l < c->n_layers; l++) {
@@ -1067,13 +1072,13 @@ float *model_forward(model_t *m, int token, int pos) {
                 dim, hd, n_vh, n_kh, dc, c->norm_rms_eps
             );
 
-            /* Post-GDN normalization (Qwen3.5 uses post_attn_norm here) */
-            if (s->post_attn_norm_w[l]) {
-                rmsnorm(s->xb2, s->xb2, s->post_attn_norm_w[l], dim);
-            }
+            /* Residual connection: add raw GDN output to x.
+             * For Qwen3.5, post_attention_norm is applied AFTER the residual
+             * (it serves as the pre-FFN norm, not a pre-residual normalisation). */
             vec_add(s->x, s->xb2, dim);
 
-            /* FFN: use post_attn_norm as pre-FFN norm for Qwen3.5 (no ffn_norm) */
+            /* FFN: post_attention_norm doubles as the pre-FFN norm for Qwen3.5
+             * (no separate ffn_norm weight in these layers). */
             const float *ffn_pre_norm = s->ffn_norm_w[l]
                                         ? s->ffn_norm_w[l]
                                         : s->post_attn_norm_w[l];
@@ -1238,15 +1243,17 @@ float *model_forward(model_t *m, int token, int pos) {
 
         /* Output projection */
         matmul(s->xb2, s->xb, lw->attn_output, dim, dim, lw->type_attn_output);
-        /* Post-attention normalization (Gemma 4 / Qwen3.5) */
-        if (s->post_attn_norm_w[l]) {
+        /* Post-attention normalization:
+         * - Gemma 4:   applied BEFORE residual (pre-residual normalisation style).
+         * - Qwen3.5:   applied AFTER residual (serves as pre-FFN norm instead). */
+        if (!is_qwen35 && s->post_attn_norm_w[l]) {
             rmsnorm(s->xb2, s->xb2, s->post_attn_norm_w[l], dim);
         }
         vec_add(s->x, s->xb2, dim);
 
         /* ---- FFN (SwiGLU) ---- */
-        /* For Qwen3.5 full-attention layers, use post_attn_norm as pre-FFN norm
-         * when no separate ffn_norm exists. */
+        /* For Qwen3.5 full-attention layers, post_attention_norm doubles as
+         * the pre-FFN norm (no separate ffn_norm weight in these layers). */
         {
             const float *ffn_pre_norm = s->ffn_norm_w[l]
                                         ? s->ffn_norm_w[l]
